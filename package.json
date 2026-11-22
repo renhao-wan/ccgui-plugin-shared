@@ -15,8 +15,12 @@
     "./validate-core": "./src/validate-core.mjs"
   },
   "files": [
-    "src"
+    "src",
+    "bin"
   ],
+  "bin": {
+    "shared-version": "./bin/shared-version.mjs"
+  },
   "scripts": {
     "test": "node --test test/"
   },

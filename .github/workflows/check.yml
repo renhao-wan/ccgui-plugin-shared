@@ -38,6 +38,23 @@ jobs:
           process.exit(bad ? 1 : 0);
           '
 
+      # bin 里的脚本也会被插件通过 npx 调用，路径写错同样是到那边才发现。
+      - name: Check bin targets resolve
+        run: |
+          node -e '
+          const fs = require("node:fs");
+          const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+          let bad = 0;
+          for (const [name, rel] of Object.entries(pkg.bin || {})) {
+            if (!fs.existsSync(rel)) {
+              console.error("缺少 bin：" + name + " -> " + rel);
+              bad += 1;
+            }
+          }
+          console.log("bin 检查：" + Object.keys(pkg.bin || {}).length + " 个");
+          process.exit(bad ? 1 : 0);
+          '
+
       # 内联进插件时要求这些文件零外部依赖（兄弟模块除外）。
       # 出现真的 npm 依赖，插件的单文件产物会加载失败。
       #
