@@ -1,0 +1,64 @@
+name: check
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # 包本身零运行时依赖，不需要 npm ci。
+      - name: Run tests
+        run: node --test test/
+
+      # exports 里每个入口都必须真的存在。改 package.json 时最容易
+      # 写错路径，而错到插件那边才报错就太晚了。
+      - name: Check every export resolves
+        run: |
+          node -e '
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+          let bad = 0;
+          for (const [name, rel] of Object.entries(pkg.exports)) {
+            if (!fs.existsSync(path.resolve(rel))) {
+              console.error("缺少入口：" + name + " -> " + rel);
+              bad += 1;
+            }
+          }
+          console.log("exports 检查：" + (Object.keys(pkg.exports).length - bad) + " 个通过");
+          process.exit(bad ? 1 : 0);
+          '
+
+      # 内联进插件时要求这些文件零外部依赖（兄弟模块除外）。
+      # 出现真的 npm 依赖，插件的单文件产物会加载失败。
+      #
+      # 按 `from "..."` 子句匹配，不要按 `import` 行匹配：feedback-ui 的
+      # import 列表是跨行的，只抓 `import {` 那一行会漏掉真正要检查的路径。
+      - name: No external imports in inlined modules
+        run: |
+          node -e '
+          const fs = require("node:fs");
+          const inlined = ["feedback", "feedback-net", "feedback-ui", "markdown", "markdown-view"];
+          let bad = 0;
+          for (const name of inlined) {
+            const src = fs.readFileSync("src/" + name + ".mjs", "utf8");
+            const specs = [...src.matchAll(/from\s+["\x27]([^"\x27]+)["\x27]/g)].map((m) => m[1]);
+            for (const spec of specs) {
+              if (!/^\.\/[A-Za-z0-9_-]+\.mjs$/.test(spec)) {
+                console.error(name + ".mjs 含非兄弟模块 import：" + spec);
+                bad += 1;
+              }
+            }
+          }
+          if (bad) process.exit(1);
+          console.log("内联模块的依赖检查通过");
+          '
