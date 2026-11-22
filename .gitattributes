@@ -1,0 +1,7 @@
+# 源码必须保持 LF。
+#
+# 这些文件会被插件的 build.mjs 逐字读出来内联进 main.js。若在 Windows 上
+# 检出成 CRLF，产物就跟 Linux / CI 上构建出来的不一样，`git diff --exit-code
+# main.js` 在 CI 里会误报「产物过期」。用 eol=lf 强制规范化，不依赖各人
+# 的 core.autocrlf 设置。
+* text=auto eol=lf
