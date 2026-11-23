@@ -46,12 +46,12 @@ function baseOpts(over) {
 
 test("挂载时查一次额度，查到了就显示服务端给的真实值", async () => {
   let calls = 0;
-  const t = setup(baseOpts({ quota: async () => { calls += 1; return { remaining: 5 }; } }));
+  const t = setup(baseOpts({ quota: async () => { calls += 1; return { remaining: 1 }; } }));
   await new Promise((r) => setTimeout(r, 0));
   t.run();
   assert.equal(calls, 1, "只查一次");
   // 文案由 describeQuota 按 remaining 生成，服务端的 message 不参与。
-  assert.equal(t.last().quotaText.message, "今天还可发 5 条反馈");
+  assert.equal(t.last().quotaText.message, "每个插件每两天可提交 1 条反馈");
 });
 
 test("额度查不到时给 canRetry，重试会重新请求", async () => {

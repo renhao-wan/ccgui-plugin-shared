@@ -74,16 +74,24 @@ test("send 把权限未生效的错误说成「重新安装插件」", async () 
   assert.match(r.message, /重新安装/);
 });
 
-test("quota 用 GET 查额度，不带请求体", async () => {
-  const ctx = makeCtx(() => ({ status: 200, body: JSON.stringify({ remaining: 25, dailyLimit: 30 }) }));
+test("quota 用 GET 查额度，带 pluginId 且不带请求体", async () => {
+  const ctx = makeCtx(() => ({ status: 200, body: JSON.stringify({ remaining: 1, dailyLimit: 1, fallbackRemaining: 3 }) }));
   const net = createFeedbackNet(ctx, OPTS);
   const q = await net.quota();
 
-  assert.deepEqual(q, { remaining: 25, dailyLimit: 30 });
+  assert.deepEqual(q, { remaining: 1, dailyLimit: 1, fallbackRemaining: 3 });
   const { payload } = ctx.calls[0];
   assert.equal(payload.method, "GET");
-  assert.equal(payload.url, "https://relay.example/quota");
+  // 冷却按插件区分，查询必须带上本插件 id，否则服务端只能回乐观值。
+  assert.equal(payload.url, "https://relay.example/quota?pluginId=demo");
   assert.equal(payload.body, null);
+});
+
+test("quota 回传 fallbackRemaining 时一并解析", async () => {
+  const ctx = makeCtx(() => ({ status: 200, body: JSON.stringify({ remaining: 0, dailyLimit: 1, fallbackRemaining: 2 }) }));
+  const q = await createFeedbackNet(ctx, OPTS).quota();
+  assert.equal(q.remaining, 0);
+  assert.equal(q.fallbackRemaining, 2);
 });
 
 test("quota 回传空字符串时不读成 0 条", async () => {

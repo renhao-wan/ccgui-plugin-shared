@@ -103,7 +103,7 @@ test("describeFeedbackResult 命中各响应分支", () => {
   });
   assert.equal(limited.ok, false);
   assert.equal(limited.kind, "rate_limited");
-  assert.match(limited.message, /额度/);
+  assert.match(limited.message, /48|两天/);
 
   const rejected = describeFeedbackResult({ status: 400, body: '{"ok":false,"error":"invalid_text"}' });
   assert.equal(rejected.kind, "invalid");
@@ -113,29 +113,29 @@ test("describeFeedbackResult 命中各响应分支", () => {
   assert.match(server.message, /GitHub Issue/);
 });
 
-test("describeFeedbackResult 区分突发限流与日额度耗尽", () => {
-  // 突发：10 分钟 3 条撞了。让用户「明天再来」是错的——等十分钟就好。
+test("describeFeedbackResult 区分突发限流与冷却耗尽", () => {
+  // 突发：兜底池的 10 分钟窗口撞了。让用户「48 小时后再来」是错的——等十分钟就好。
   const burst = describeFeedbackResult({
     status: 429,
     body: '{"ok":false,"error":"rate_limited","kind":"burst","remaining":0}',
   });
   assert.equal(burst.kind, "rate_limited");
   assert.match(burst.message, /太快|稍候|分钟/);
-  assert.doesNotMatch(burst.message, /明天/);
+  assert.doesNotMatch(burst.message, /48|两天/);
 
-  // 日额度：真的今天没了。
-  const daily = describeFeedbackResult({
+  // 冷却：本插件 48 小时额度真的没了。
+  const cooldown = describeFeedbackResult({
     status: 429,
-    body: '{"ok":false,"error":"rate_limited","kind":"daily","remaining":0}',
+    body: '{"ok":false,"error":"rate_limited","kind":"cooldown","remaining":0}',
   });
-  assert.match(daily.message, /明天/);
+  assert.match(cooldown.message, /48|两天/);
 
-  // 服务端没给 kind 时保守按日额度处理，不能说「稍候再试」骗人白等。
+  // 服务端没给 kind 时保守按冷却处理，不能说「稍候再试」骗人白等。
   const unknownKind = describeFeedbackResult({
     status: 429,
     body: '{"ok":false,"error":"rate_limited","remaining":0}',
   });
-  assert.match(unknownKind.message, /明天/);
+  assert.match(unknownKind.message, /48|两天/);
 });
 
 test("describeFeedbackResult 把 400 的几种原因分开说", () => {
@@ -210,15 +210,23 @@ test("describeFeedbackResult 网络异常转成可读文案", () => {
   assert.match(timeout.message, /超时|GitHub Issue/);
 });
 
-test("describeQuota 生成额度提示文案", () => {
-  assert.equal(describeQuota({ remaining: 27, dailyLimit: 30 }).remaining, 27);
-  assert.match(describeQuota({ remaining: 27, dailyLimit: 30 }).message, /27/);
+test("describeQuota 冷却期外提示「每两天可提交 1 条」", () => {
+  const r = describeQuota({ remaining: 1, dailyLimit: 1, fallbackRemaining: 3 });
+  assert.equal(r.remaining, 1);
+  assert.match(r.message, /两天|48/);
+  assert.equal(r.canRetry, false);
+});
 
-  assert.match(describeQuota({ remaining: 0, dailyLimit: 30 }).message, /用完|明天/);
+test("describeQuota 冷却中但兜底池还有额度时明说还能发几条", () => {
+  const r = describeQuota({ remaining: 0, dailyLimit: 1, fallbackRemaining: 2 });
+  assert.equal(r.remaining, 0);
+  assert.match(r.message, /2/);
+  assert.match(r.message, /共享|额度/);
+});
 
-  const unknown = describeQuota(null);
-  assert.equal(unknown.remaining, null);
-  assert.match(unknown.message, /额度有限/);
+test("describeQuota 冷却中且兜底池也用完才说「48 小时后再来」", () => {
+  const r = describeQuota({ remaining: 0, dailyLimit: 1, fallbackRemaining: 0 });
+  assert.match(r.message, /48|两天|用完/);
 });
 
 test("describeQuota 中转连不上时不冒充「额度有限」", () => {
@@ -253,7 +261,7 @@ test("describeFeedbackResult 只有带 ok:true 的 200 才算发送成功", () =
   assert.equal(good.remaining, 26);
 });
 
-test("describeFeedbackResult 突发限流透传服务端的真实剩余额度", () => {
+test("describeFeedbackResult 突然限流透传服务端的真实剩余额度", () => {
   // Worker 在 burst 时回的是 remaining:27（今天还剩 27 条）。
   // 插件写死 0 的话，一旦界面用这个值更新额度，就会说「今天用完了」。
   const r = describeFeedbackResult({
@@ -262,6 +270,16 @@ test("describeFeedbackResult 突发限流透传服务端的真实剩余额度", 
   });
   assert.equal(r.remaining, 27, "突发限流不该把剩余额度说成 0");
   assert.match(r.message, /太快|稍候|分钟/);
+});
+
+test("describeFeedbackResult 识别 cooldown 限流并说清 48 小时规则", () => {
+  const r = describeFeedbackResult({
+    status: 429,
+    body: '{"ok":false,"error":"rate_limited","kind":"cooldown"}',
+  });
+  assert.equal(r.ok, false);
+  assert.match(r.message, /48|两天/);
+  assert.match(r.message, /GitHub Issue/, "冷却被拒也要给退路");
 });
 
 test("describeFeedbackResult 把 413 / 503 分开说", () => {
@@ -289,6 +307,14 @@ test("describeQuota 额度字段是脏数据时退回安全文案而不是显示
   }
 });
 
+test("nextQuota 冷却模式下自减不会降到 0 以下（本插件只有 1 条）", () => {
+  // 常规额度是「本插件 1 条」，自减后最低停在 0，不该出现 -1。
+  const q = nextQuota({ remaining: 1, dailyLimit: 1 }, null);
+  assert.equal(q.remaining, 0);
+  const q2 = nextQuota({ remaining: 0, dailyLimit: 1 }, null);
+  assert.equal(q2.remaining, 0);
+});
+
 test("nextQuota 在服务端没给额度时不会把 null 读成 0 条", () => {
   // describeFeedbackResult 在响应体里没有 remaining 时会回 remaining: null。
   // 旧写法 Number.isFinite(Number(null)) === true 把它当成 0，
@@ -298,7 +324,6 @@ test("nextQuota 在服务端没给额度时不会把 null 读成 0 条", () => {
   assert.equal(q.remaining, 11, "没有回传额度时应当自减，而不是清零");
   assert.notEqual(q.remaining, 0);
 });
-
 test("nextQuota 只采信真正的数字", () => {
   assert.equal(nextQuota({ remaining: 5, dailyLimit: 30 }, 7).remaining, 7);
   assert.equal(nextQuota({ remaining: 5, dailyLimit: 30 }, "7").remaining, 7, "数字字符串可以接受");

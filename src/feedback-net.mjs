@@ -102,18 +102,20 @@ export function createFeedbackNet(ctx, opts) {
   }
 
   /**
-   * 查今天的剩余额度。失败时返回 `{offline: true}`——额度查不到不能挡住
+   * 查本插件当前的额度。失败时返回 `{offline: true}`——额度查不到不能挡住
    * 发反馈，但要让界面知道「是连不上」而不是「额度紧张」，两句话说给用户
    * 听的意思完全不同。
    *
-   * @returns {Promise<{remaining: number, dailyLimit: number}|{offline: true}|null>}
+   * 必须带 `?pluginId=`：冷却按插件区分，不带的话服务端只能回乐观值。
+   *
+   * @returns {Promise<{remaining: number, dailyLimit: number, fallbackRemaining?: number}|{offline: true}|null>}
    */
   async function quota() {
     try {
       const res = await fbNetTimeout(
         ctx.bridge.invoke("plugin_http_request", {
           method: "GET",
-          url: endpoint + "/quota",
+          url: endpoint + "/quota?pluginId=" + encodeURIComponent(pluginId),
           headers: { "User-Agent": userAgent() },
           body: null,
         }),
@@ -127,9 +129,13 @@ export function createFeedbackNet(ctx, opts) {
       // 与「请求失败」同样按连不上处理——不需要单独再判一次。
       const data = body ? JSON.parse(body) : null;
       // 用 quotaCount 而不是 Number.isFinite(Number(...))：后者把 null/"" 读成 0，
-      // 界面会说「今天的额度已用完」。
+      // 界面会说「额度已用完」。
       const remaining = data ? quotaCount(data.remaining) : null;
-      return remaining === null ? null : { remaining, dailyLimit: Number(data.dailyLimit) || 30 };
+      if (remaining === null) return null;
+      const fallback = data ? quotaCount(data.fallbackRemaining) : null;
+      const out = { remaining, dailyLimit: Number(data.dailyLimit) || 1 };
+      if (fallback !== null) out.fallbackRemaining = Math.max(0, fallback);
+      return out;
     } catch {
       return { offline: true };
     }
