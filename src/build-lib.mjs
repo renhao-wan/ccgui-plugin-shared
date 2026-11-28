@@ -109,7 +109,8 @@ function checkDuplicateDecls(written, pad) {
  *
  * @param {object} opts
  * @param {string} opts.root 插件根目录
- * @param {(string|{name:string, source?:"shared"|"local"})[]} [opts.libs] 内联顺序即数组顺序
+ * @param {(string|{name:string, source?:"shared"|"local"|"auto", file?:string})[]} [opts.libs]
+ *        内联顺序即数组顺序。字符串形态按「先共用包、再 src/lib」自动识别来源。
  * @param {string} [opts.indent] 库内联进函数体时的缩进，默认顶层
  * @param {string} [opts.libMarker] 库内联区开始标记
  * @param {string} [opts.libMarkerEnd] 库内联区结束标记；head 里只有开始标记时，
@@ -143,27 +144,49 @@ export function buildPlugin(opts) {
   const headPath = opts.head || path.join(root, "src", "main.head.js");
   const outPath = opts.out || path.join(root, "main.js");
 
-  // 归一成 {name, source}：字符串默认从共用包取，本地库显式写 source: "local"。
-  const libs = (opts.libs || []).map((lib) =>
-    typeof lib === "string" ? { name: lib, source: "shared" } : { name: lib.name, source: lib.source || "shared" },
-  );
+  // 归一成 {name, source, file}。字符串按「先共用包、再 src/lib」自动识别来源；
+  // 对象可以显式指定 source 与 file（少数形态需要）。
+  const libs = (opts.libs || []).map((lib) => {
+    if (typeof lib === "string") return { name: lib, source: "auto" };
+    return { name: lib.name, source: lib.source || "auto", file: lib.file };
+  });
   const order = libs.map((l) => l.name);
 
   function readLib(name) {
     const spec = libs.find((l) => l.name === name);
     if (!spec) throw new Error(`内联清单里没有 ${name}`);
-    if (spec.source === "local") {
-      const file = path.join(root, "src", "lib", name + ".mjs");
-      if (!fs.existsSync(file)) throw new Error(`缺少 src/lib/${name}.mjs`);
-      return fs.readFileSync(file, "utf8");
+    if (spec.file) return fs.readFileSync(spec.file, "utf8");
+
+    if (spec.source !== "local") {
+      try {
+        return fs.readFileSync(require.resolve("ccgui-plugin-shared/" + name), "utf8");
+      } catch (err) {
+        if (spec.source === "shared") {
+          throw new Error(
+            `读不到共用库 ccgui-plugin-shared/${name}（${err.message}）。` +
+              "先跑 npm install——这个包是 npm 依赖，不在仓库里。",
+          );
+        }
+        // source: "auto" 时落到本地库
+      }
     }
+    const local = path.join(root, "src", "lib", name + ".mjs");
+    if (!fs.existsSync(local)) {
+      throw new Error(`读不到 ${name}：共用包没有这个入口，src/lib/${name}.mjs 也不存在`);
+    }
+    return fs.readFileSync(local, "utf8");
+  }
+
+  /** 库的真实来源，用来在内联注释里写清楚是哪一份。 */
+  function originOf(name) {
+    const spec = libs.find((l) => l.name === name);
+    if (spec.file) return path.relative(root, spec.file).replace(/\\/g, "/");
+    if (spec.source === "local") return "src/lib";
     try {
-      return fs.readFileSync(require.resolve("ccgui-plugin-shared/" + name), "utf8");
-    } catch (err) {
-      throw new Error(
-        `读不到共用库 ccgui-plugin-shared/${name}（${err.message}）。` +
-          "先跑 npm install——这个包是 npm 依赖，不在仓库里。",
-      );
+      require.resolve("ccgui-plugin-shared/" + name);
+      return "ccgui-plugin-shared";
+    } catch {
+      return "src/lib";
     }
   }
 
@@ -194,15 +217,17 @@ export function buildPlugin(opts) {
       throw new Error(`main.head.js 缺少内联标记 ${libMarker}`);
     }
     const chunks = order.map((name) => {
-      const spec = libs.find((l) => l.name === name);
-      const origin = spec.source === "local" ? "src/lib" : "ccgui-plugin-shared";
       const body = indentLines(getTransformed(name), pad);
-      return pad + "// ---- " + origin + "/" + name + ".mjs ----\n" + body + "\n";
+      return pad + "// ---- " + originOf(name) + "/" + name + ".mjs ----\n" + body + "\n";
+    });
+    const hasLocal = order.some((name) => {
+      const o = originOf(name);
+      return o.startsWith("src/lib");
     });
     const banner =
       pad +
       "// ---- 以下由 " +
-      (libs.some((l) => l.source === "local") ? "src/lib/*.mjs 与共用库" : "ccgui-plugin-shared") +
+      (hasLocal ? "src/lib/*.mjs 与共用库" : "ccgui-plugin-shared") +
       " 内联生成 ----\n";
 
     if (out.includes(libMarkerEnd)) {

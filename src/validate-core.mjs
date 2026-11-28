@@ -28,6 +28,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { DROPDOWN_CLASS_SUFFIXES } from "./dropdown.mjs";
+import { resolveLibs } from "./lib-spec.mjs";
 
 const ID_RE = /^[a-z0-9][a-z0-9-]{1,63}$/;
 const VER_RE = /^\d+\.\d+\.\d+$/;
@@ -731,29 +732,35 @@ export async function runValidateCli(scriptUrl, opts = {}) {
   // 清单本身是 ESM，直接 import 最稳：用正则解析数组的话，注释里一个逗号
   // 就会把整个清单读坏，而那时报错会指向「缺少某个库」，查起来很远。
   let specError = null;
-  let spec = null;
+  let order = null;
   if (opts.libSpec) {
     const file = path.join(root, opts.libSpec);
     if (!fs.existsSync(file)) {
       specError = `缺少 ${opts.libSpec}`;
     } else {
       try {
-        spec = (await import(pathToFileURL(file).href)).default;
+        const spec = (await import(pathToFileURL(file).href)).default;
+        if (Array.isArray(spec)) order = spec;
+        else specError = `${opts.libSpec} 应导出一个有序数组`;
       } catch (err) {
         specError = `${opts.libSpec} 无法加载：${err.message}`;
       }
     }
   }
-  const shared = spec ? spec.shared || [] : opts.shared || [];
-  const localLibs = spec ? spec.local || [] : opts.localLibs || [];
+  const shared = order ? [] : opts.shared || [];
+  const localLibs = order ? [] : opts.localLibs || [];
 
   return validatePlugin({
     root,
     quiet: opts.quiet,
     extraRules(ctx) {
       if (specError) ctx.fail(specError);
-      const dup = shared.find((n) => localLibs.includes(n));
-      if (dup) ctx.fail(`${opts.libSpec} 里 ${dup} 同时出现在 shared 与 local`);
+
+      if (order) {
+        // 每个名字必须能解析到共用包入口或 src/lib 文件，与 build 的判据一致。
+        const resolved = resolveLibs(order, root);
+        for (const e of resolved.errors) ctx.fail(e);
+      }
 
       for (const name of shared) {
         try {

@@ -573,22 +573,22 @@ test("runValidateCli 的 extra 报错会进 errors，退出码随之非零", asy
  * 还按 0.1.2 的目录结构 require 入口。两份清单没有任何约束，漂开了也没人发现，
  * 直到 validate-core 改成 `import "./dropdown.mjs"` 才炸出来。
  */
-test("libSpec 让 shared / localLibs 从同一份清单读", async () => {
+test("libSpec 让库清单从同一份文件读", async () => {
   const root = makePlugin({
     "src/lib/a.mjs": "export const A = 1;\n",
-    "plugin.libs.mjs": 'export default { local: ["a"] };\n',
+    "plugin.libs.mjs": 'export default ["a"];\n',
   });
   try {
     const fakeUrl = pathToFileURL(path.join(root, "scripts", "v.mjs")).href;
     const out = await runValidateCli(fakeUrl, { libSpec: "plugin.libs.mjs", quiet: true });
     assert.deepEqual(out.errors, [], out.errors.join("; "));
 
-    // 清单里声明的本地库不存在时要报错（而不是静默跳过）
-    const root2 = makePlugin({ "plugin.libs.mjs": 'export default { local: ["nope"] };\n' });
+    // 清单里声明的库不存在时要报错（而不是静默跳过）
+    const root2 = makePlugin({ "plugin.libs.mjs": 'export default ["nope"];\n' });
     try {
       const url2 = pathToFileURL(path.join(root2, "scripts", "v.mjs")).href;
       const out2 = await runValidateCli(url2, { libSpec: "plugin.libs.mjs", quiet: true });
-      assert.ok(has(out2.errors, /缺少 src\/lib\/nope\.mjs/), out2.errors.join("; "));
+      assert.ok(has(out2.errors, /读不到 nope/), out2.errors.join("; "));
     } finally {
       fs.rmSync(root2, { recursive: true, force: true });
     }
@@ -597,14 +597,17 @@ test("libSpec 让 shared / localLibs 从同一份清单读", async () => {
   }
 });
 
-test("libSpec 里同一个名字同时出现在 shared 与 local 时报错", async () => {
-  // build 会读到两份不同源码，产物自检必然失败，但报错会指向「不一致」；
+test("libSpec 里同一个名字写两次时报错", async () => {
+  // 重复声明在 build 里会被内联两遍，产物自检报「顶层标识符重名」；
   // 在这里直接指出真实原因。
-  const root = makePlugin({ "plugin.libs.mjs": 'export default { shared: ["feedback"], local: ["feedback"] };\n' });
+  const root = makePlugin({
+    "plugin.libs.mjs": 'export default ["a", "a"];\n',
+    "src/lib/a.mjs": "export const A = 1;\n",
+  });
   try {
     const fakeUrl = pathToFileURL(path.join(root, "scripts", "v.mjs")).href;
     const out = await runValidateCli(fakeUrl, { libSpec: "plugin.libs.mjs", quiet: true });
-    assert.ok(has(out.errors, /同时出现在 shared 与 local/), out.errors.join("; "));
+    assert.ok(has(out.errors, /出现了两次/), out.errors.join("; "));
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

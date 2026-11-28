@@ -1,6 +1,6 @@
 {
   "name": "ccgui-plugin-shared",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "CC GUI 插件的共用层：反馈渠道（纯函数 / 网络 / 行为）、Markdown 解析与渲染、自绘下拉、假 React 测试替身、manifest 自检、构建期内联与库清单",
   "type": "module",
   "license": "MIT",

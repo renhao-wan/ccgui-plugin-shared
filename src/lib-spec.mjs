@@ -9,39 +9,60 @@
  * build 早已换成 v0.1.6，validate 还在按 0.1.2 的目录结构 require——直到
  * validate-core 改成 `import "./dropdown.mjs"` 才炸出来。
  *
- * 现在每个插件根目录放一个 plugin.libs.mjs，build 与 validate 都读它：
+ * 现在每个插件根目录放一个 plugin.libs.mjs，只写一个**有序**数组：
  *
- *   export default {
- *     shared: ["feedback", "feedback-net", "feedback-ui", "dropdown"],
- *     local: ["parse", "rising"],
- *   };
+ *   export default ["parse", "rising", "feedback", "feedback-ui"];
  *
- * 顺序即内联顺序（有依赖的排前面）。
+ * 顺序即内联顺序，有依赖的排前面。来源不用写：先按共用包的 exports 解析，
+ * 解析不到再读 src/lib/<name>.mjs。这样「哪个库来自哪里」不会和真实情况漂开，
+ * 也不必维护 shared / local 两份名单（它们还得额外保证不重名）。
  */
-
-/** 把清单归一成 buildPlugin 需要的 [{name, source}]。 */
-export function toBuildLibs(spec) {
-  return [
-    ...(spec.shared || []).map((name) => ({ name, source: "shared" })),
-    ...(spec.local || []).map((name) => ({ name, source: "local" })),
-  ];
-}
+import fs from "node:fs";
+import path from "node:path";
+import { createRequire } from "node:module";
 
 /**
- * 按声明的顺序校验清单本身是否自洽。
+ * 归一成有序的 [{name, source, file}]。
  *
- * 这里只做能静态判的事：一个名字不能既当 shared 又当 local（build 里会读到
- * 两份不同源码，产物自检必然失败，但报错会指向「不一致」而不是真实原因）。
+ * @param {string[]} order plugin.libs.mjs 的默认导出
+ * @param {string} root 插件根目录
+ * @returns {{libs:{name:string, source:"shared"|"local", file:string}[], errors:string[]}}
  */
-export function checkLibSpec(spec) {
-  const seen = new Map();
-  for (const [kind, names] of [["shared", spec.shared || []], ["local", spec.local || []]]) {
-    for (const name of names) {
-      if (seen.has(name)) {
-        return `内联清单里 ${name} 同时出现在 ${seen.get(name)} 与 ${kind}`;
-      }
-      seen.set(name, kind);
+export function resolveLibs(order, root) {
+  const require = createRequire(path.join(root, "__libs__.mjs"));
+  const libs = [];
+  const errors = [];
+  const seen = new Set();
+
+  for (const name of order) {
+    if (seen.has(name)) {
+      errors.push(`内联清单里 ${name} 出现了两次`);
+      continue;
     }
+    seen.add(name);
+
+    let sharedFile = null;
+    try {
+      sharedFile = require.resolve("ccgui-plugin-shared/" + name);
+    } catch {
+      // 不是共用库，往下看本地
+    }
+    if (sharedFile) {
+      libs.push({ name, source: "shared", file: sharedFile });
+      continue;
+    }
+
+    const localFile = path.join(root, "src", "lib", name + ".mjs");
+    if (fs.existsSync(localFile)) {
+      libs.push({ name, source: "local", file: localFile });
+      continue;
+    }
+
+    errors.push(
+      `读不到 ${name}：共用包 ccgui-plugin-shared 没有这个入口（先跑 npm install），` +
+        `src/lib/${name}.mjs 也不存在`,
+    );
   }
-  return null;
+
+  return { libs, errors };
 }
