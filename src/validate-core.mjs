@@ -490,11 +490,16 @@ function checkBundle(root, fail, warn) {
   //
   // 变量名各插件并不统一（CSS / STYLE / UI_CSS 都有），早年只认 `const CSS =`
   // 就把 workspace-config 与 cli-install-audit 的样式整段跳过了——它们的
-  // 「类名必须有 CSS」从没被检查过。这里按「字符串模板且内容像 CSS」认：
-  // 声明名不限，但必须含至少一条 `.foo {` 规则，避免把别的模板串也当成 CSS。
+  // 「类名必须有 CSS」从没被检查过。所以这里按**内容**认，不按变量名：
+  //   1. 含至少一条 `.foo {` 规则；
+  //   2. 不含 JS 特征（`=>` / `const ` / `await `）——worklog 的
+  //      STORAGE_MOVE_SCRIPT 是一段 node 脚本，里面也有 `.wl-` 前缀的字符串
+  //      和 `x: y,` 形状，光看「像规则」会把它当成样式表，进而对这六条
+  //      反馈类名报出一堆并不存在的缺失。
   for (const block of src.matchAll(/const\s+[A-Za-z0-9_$]+\s*=\s*`([\s\S]*?)`;/g)) {
     const css = block[1];
     if (!/\.[A-Za-z][A-Za-z0-9_-]*\s*[,{]/.test(css)) continue;
+    if (/=>|\bconst\s|\bawait\s|\bfunction\s/.test(css)) continue;
     if (/@import/.test(css)) fail("注入 CSS 含 @import（宿主会拒绝）");
     if (/url\(\s*["']?https?:/i.test(css)) fail("注入 CSS 含远程 url()（宿主会拒绝）");
     checkClassesHaveCss(src, css, fail);

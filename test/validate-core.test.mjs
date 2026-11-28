@@ -405,6 +405,25 @@ test("CSS 常量叫 STYLE / UI_CSS 时也要检查，不能只认 const CSS", ()
   }
 });
 
+test("内联的 node 脚本不会被当成 CSS", () => {
+  // worklog 的真实形态：CSS 之外还有一个 STORAGE_MOVE_SCRIPT 模板串，
+  // 里面既有 `.wl-xxx` 形状的字符串也有 `key: value,`，光按「像规则」判
+  // 会把它当成样式表，接着对反馈区的六个类名报出一堆并不存在的缺失。
+  const src = [
+    "export default function activate(ctx) { void ctx; return () => {}; }",
+    "const CSS = `",
+    [".wl-feedback-text", ".wl-feedback-row", ".wl-feedback-count", ".wl-feedback-quota",
+     ".wl-feedback-actions", ".wl-feedback-issue", ".wl-feedback-status",
+     ".wl-feedback-sent"].map((c) => c + " { color: red; }").join("\n"),
+    "`;",
+    "const STORAGE_MOVE_SCRIPT = `",
+    "(async () => { const fs = await import('node:fs'); const o = { a: 1, b: 2 }; })();",
+    "`;",
+  ].join("\n");
+  const { errors } = run({ "main.js": src });
+  assert.deepEqual(errors, [], errors.join("; "));
+});
+
 test("不是 CSS 的模板字符串不会被误当成样式表", () => {
   // 只认「含至少一条 .foo { 规则」的模板串，否则普通的 SQL / 提示文案里
   // 只要出现一个点号就会被拉去做类名检查，报出莫名其妙的缺失。
