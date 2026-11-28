@@ -284,6 +284,109 @@ test("package.json 与 manifest.json 版本漂开时报错", () => {
   assert.ok(has(errors, /版本/), errors.join("; "));
 });
 
+/**
+ * 组件产出的类名必须有 CSS。
+ *
+ * 真实事件：leetcode 插件用 feedback-ui 渲染反馈区，行为层产出的
+ * `lc-feedback-text` / `lc-feedback-send` 一条 CSS 都没写。构建通过、
+ * 单测通过、冒烟通过——类名是对的，只是没有样式，于是输入框和按钮
+ * 全是浏览器默认外观。用户看出来的原话是「反馈框的样式和其他组件不同」。
+ */
+test("feedback-ui 产出的组件类名缺少 CSS 时报错", () => {
+  const src = [
+    "export default function activate(ctx) { void ctx; return () => {}; }",
+    "function FeedbackSection() {",
+    "  return form.render(h, { prefix: 'lc', classes: {} });",
+    "}",
+    "const CSS = `",
+    ".lc-feedback-text { color: red; }",
+    "`;",
+  ].join("\n");
+  const { errors } = run({ "main.js": src });
+  assert.ok(has(errors, /lc-feedback-send/), errors.join("; "));
+  assert.ok(has(errors, /没有对应 CSS/), errors.join("; "));
+});
+
+test("feedback-ui 的类名都写了 CSS 时不报错", () => {
+  const names = ["text", "row", "count", "quota", "quota-retry", "actions", "issue", "send", "sent", "status"];
+  const css = names.map((n) => `.lc-feedback-${n} { color: red; }`).join("\n");
+  const src = [
+    "export default function activate(ctx) { void ctx; return () => {}; }",
+    "function FeedbackSection() {",
+    "  return form.render(h, { prefix: 'lc', classes: {} });",
+    "}",
+    "const CSS = `",
+    css,
+    "`;",
+  ].join("\n");
+  const { errors } = run({ "main.js": src });
+  assert.deepEqual(errors, [], errors.join("; "));
+});
+
+test("没用 feedback-ui 的插件不会被这条规则误报", () => {
+  // 前缀声明了但根本没渲染反馈区：不该因为没有 lc-feedback-* 而失败。
+  const src = [
+    "export default function activate(ctx) { void ctx; return () => {}; }",
+    "const opts = { prefix: 'lc' };",
+    "const CSS = `.lc-card { color: red; }`;",
+  ].join("\n");
+  const { errors } = run({ "main.js": src });
+  assert.deepEqual(errors, [], errors.join("; "));
+});
+
+/**
+ * 下拉的类名也必须有 CSS。
+ *
+ * 真实事件：leetcode 的下拉把底色写成
+ * `var(--color-background-primary-default, #232326)`，兜底值是深色，
+ * 浅色主题下菜单变成一块黑方块。行为对、类名对，构建/单测/冒烟全过。
+ */
+test("createDropdown 产出的类名缺少 CSS 时报错", () => {
+  const src = [
+    "export default function activate(ctx) { void ctx; return () => {}; }",
+    "const Dropdown = createDropdown(() => null, { prefix: 'lc' });",
+    "const CSS = `",
+    ".lc-dd-trigger { color: red; }",
+    "`;",
+  ].join("\n");
+  const { errors } = run({ "main.js": src });
+  assert.ok(has(errors, /lc-dd-menu/), errors.join("; "));
+  assert.ok(has(errors, /下拉的类名/), errors.join("; "));
+});
+
+test("下拉的类名写全时不报错", () => {
+  const names = ["trigger", "value", "caret", "scrim", "menu", "item", "label", "check", "empty"];
+  const css = [""].concat(names).map((n) => (n ? `.lc-dd-${n}` : ".lc-dd") + " { color: red; }").join("\n");
+  const src = [
+    "export default function activate(ctx) { void ctx; return () => {}; }",
+    "const Dropdown = createDropdown(() => null, { prefix: 'lc' });",
+    "const CSS = `",
+    css,
+    "`;",
+  ].join("\n");
+  const { errors } = run({ "main.js": src });
+  assert.deepEqual(errors, [], errors.join("; "));
+});
+
+test("只写 :disabled 变体不算写了主样式", () => {
+  const names = ["trigger", "value", "caret", "scrim", "menu", "item", "label", "check", "empty"];
+  const css = [""].concat(names)
+    .filter((n) => n !== "menu")
+    .map((n) => (n ? `.lc-dd-${n}` : ".lc-dd") + " { color: red; }")
+    .concat([".lc-dd-menu:hover { color: blue; }"])
+    .join("\n");
+  // 注意上面给 menu 写的是 `:hover`，按主规则判定应仍算缺失
+  const src = [
+    "export default function activate(ctx) { void ctx; return () => {}; }",
+    "const Dropdown = createDropdown(() => null, { prefix: 'lc' });",
+    "const CSS = `",
+    css,
+    "`;",
+  ].join("\n");
+  const { errors } = run({ "main.js": src });
+  assert.ok(has(errors, /lc-dd-menu\b/), errors.join("; "));
+});
+
 test("extraRules 能追加插件自己的检查，并共用一份 errors/warnings", () => {
   const seen = [];
   const { root, ...rest } = (() => {

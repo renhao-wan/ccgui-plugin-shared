@@ -20,6 +20,8 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import { DROPDOWN_CLASS_SUFFIXES } from "./dropdown.mjs";
+
 const ID_RE = /^[a-z0-9][a-z0-9-]{1,63}$/;
 const VER_RE = /^\d+\.\d+\.\d+$/;
 const EXEC_RE = /^exec:[A-Za-z0-9._-]+$/;
@@ -489,8 +491,120 @@ function checkBundle(root, fail, warn) {
   if (cssBlock) {
     if (/@import/.test(cssBlock[1])) fail("注入 CSS 含 @import（宿主会拒绝）");
     if (/url\(\s*["']?https?:/i.test(cssBlock[1])) fail("注入 CSS 含远程 url()（宿主会拒绝）");
+    checkClassesHaveCss(src, cssBlock[1], fail);
+    checkDropdownCss(src, cssBlock[1], fail);
   }
   return src;
+}
+
+/**
+ * 下拉的类名也必须有 CSS。
+ *
+ * 三个插件各自手抄过一份 Dropdown，其中 leetcode 那份用错了 token：底色写的是
+ * `var(--color-background-primary-default, #232326)`，兜底值是深色，浅色主题下
+ * 菜单直接变成一块黑方块。行为对、类名对，构建和冒烟都查不出来——只有人眼看得见。
+ *
+ * 这条只查门户：`createDropdown(..., { prefix: "xx" })` 产出的 `xx-dd-<suffix>`
+ * 是否每一条都有主规则。库本身不打包 CSS，样式由插件负责，所以漏一条就是真空。
+ */
+function checkDropdownCss(src, css, fail) {
+  if (!/createDropdown\s*\(/.test(src)) return;
+  // prefix 可能是字面量，也可能来自局部常量；先认字面量那种，认不出就跳过。
+  //
+  // 不能写成 `createDropdown\s*\([^)]*\{`：第一个参数通常是 `() => R.api`
+  // 之类的箭头函数，`[^)]*` 会停在箭头函数的右括号上，永远匹配不到后面的对象。
+  // 用定长窗口从调用点往后找即可，对象字面量就在几十字符内。
+  const call = /createDropdown\s*\(/.exec(src);
+  const area = src.slice(call.index, call.index + 400);
+  const m = /\bprefix\s*:\s*["']([A-Za-z0-9]+)["']/.exec(area);
+  if (!m) return;
+  const base = m[1] + "-dd";
+  const missing = [];
+  for (const suffix of DROPDOWN_CLASS_SUFFIXES) {
+    const cls = base + "-" + suffix;
+    if (new RegExp("\\." + cls + "\\s*[,{]").test(css)) continue;
+    missing.push(cls);
+  }
+  // 容器本身的 .xx-dd（带 is-open / is-up）也要有规则，否则上下弹没区别
+  if (!new RegExp("\\." + base + "\\s*[,{]").test(css)) missing.unshift(base);
+  if (!missing.length) return;
+  fail(
+    "下拉的类名没有对应 CSS（菜单会退化成裸 div）：" +
+      missing.join(", ") +
+      `。在 CSS 里补 .${missing[0]} { ... }`,
+  );
+}
+
+/**
+ * 组件产出的类名必须有对应 CSS。
+ *
+ * 起因：leetcode 插件用 feedback-ui 渲染反馈区，行为层产出
+ * `lc-feedback-text` / `lc-feedback-send` 等类名，但插件**一条 CSS 都没写**。
+ * 结果输入框是浏览器默认样式、按钮是默认按钮，用户看到的就是
+ * 「这个区块和别的组件长得不一样」。构建、单测、冒烟全都发现不了——
+ * 类名对不对和有没有样式是两件事。
+ *
+ * 只查「组件自己产出的类」：形如 `"<prefix>-feedback-<name>"` 这种
+ * 由库里代码拼接出来的名字，不容易靠人工扫出来。
+ */
+function checkClassesHaveCss(src, css, fail) {
+  const feedbackNames = [
+    "text", "row", "count", "quota", "quota-retry", "actions",
+    "issue", "send", "sent", "status",
+  ];
+  // 找出本插件用的 prefix：`render(h, { prefix: "xx" })`
+  const prefixMatch = src.match(/prefix\s*:\s*["']([A-Za-z0-9]+)["']/);
+  if (!prefixMatch) return;
+  const prefix = prefixMatch[1];
+  // 只有真的用了 feedback-ui 才查
+  if (!/feedback-(?:text|send|status)/.test(src)) return;
+
+  const missing = [];
+  for (const name of feedbackNames) {
+    const cls = prefix + "-feedback-" + name;
+    // 只认「主规则」：类名后面跟逗号或左花括号（中间可有空白）。
+    // 不能算 `.cls:disabled { }` 这种变体——只写了 :disabled 说明主样式漏了，
+    // 用户看到的仍是浏览器默认外观。
+    if (new RegExp("\\." + cls.replace(/-/g, "\\-") + "\\s*[,{]").test(css)) continue;
+    // 例外：调用方通过 classes 传了自己的类名，样式由那个类提供。
+    // 形如 classes: { primaryBtn: "gt-btn gt-btn--primary" } —— 这时
+    // `<prefix>-feedback-send` 上同时挂着 gt-btn，不是裸的默认按钮。
+    if (classProvidedByCaller(src, name)) continue;
+    missing.push(cls);
+  }
+  if (!missing.length) return;
+
+  fail(
+    "这些组件类名没有对应 CSS（界面会退化成浏览器默认样式）：" +
+      missing.join(", ") +
+      `。在 CSS 里补 .${missing[0]} { ... }`,
+  );
+}
+
+/**
+ * 调用方是否通过 classes 给这个槽位传了自己的样式类。
+ *
+ * feedback-ui 的 classes 键名与内部 name 的对应关系：
+ *   input→text, primaryBtn→send, secondaryBtn→issue,
+ *   hint→count/quota, linkBtn→quota-retry, note→status
+ * 只要对应键传了非空字符串，就说明有样式来源，不该报缺 CSS。
+ */
+function classProvidedByCaller(src, name) {
+  const slotOf = {
+    text: "input",
+    send: "primaryBtn",
+    issue: "secondaryBtn",
+    "quota-retry": "linkBtn",
+    count: "hint",
+    quota: "hint",
+    status: "note",
+  };
+  const slot = slotOf[name];
+  if (!slot) return false;
+  // classes: { primaryBtn: "gt-btn gt-btn--primary" }
+  const re = new RegExp("\\b" + slot + "\\s*:\\s*[\"']([^\"']*)[\"']");
+  const m = src.match(re);
+  return Boolean(m && String(m[1]).trim());
 }
 
 /** 按源码里实际出现的用法，推出必须声明的权限。 */
