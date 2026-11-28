@@ -439,6 +439,26 @@ test("不是 CSS 的模板字符串不会被误当成样式表", () => {
   assert.equal(ddErrors.length, 1, "同一条缺失只该报一次：" + errors.join("; "));
 });
 
+test("只用行为层、自绘反馈区的插件不会被误报", () => {
+  // cli-install-audit 的真实形态：反馈区自己写渲染（类名 cli-audit-feedback-*，
+  // 配内联 style），只用 useFeedbackForm 的行为层，从不调 form.render()。
+  // 旧规则按「全文出现过 feedback-text」判断，还取全文件第一个 prefix——
+  // 下拉的 `prefix: "cli"` 排得更靠前，于是拼出 cli-feedback-text 报缺失。
+  const src = [
+    "export default function activate(ctx) { void ctx; return () => {}; }",
+    "const HINT = 'prefix: \"cli\" 只是文档里的示例';",
+    "function FeedbackPanel() {",
+    "  const form = useFeedbackForm(ctx.react, { repo: 'x' });",
+    "  return h('textarea', { className: 'cli-audit-feedback-text' });",
+    "}",
+    "const UI_CSS = `",
+    ".cli-audit-feedback-text { width: 100%; }",
+    "`;",
+  ].join("\n");
+  const { errors } = run({ "main.js": src });
+  assert.deepEqual(errors, [], errors.join("; "));
+});
+
 test("extraRules 能追加插件自己的检查，并共用一份 errors/warnings", () => {
   const seen = [];
   const { root, ...rest } = (() => {

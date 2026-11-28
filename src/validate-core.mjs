@@ -563,12 +563,18 @@ function checkClassesHaveCss(src, css, fail) {
     "text", "row", "count", "quota", "quota-retry", "actions",
     "issue", "send", "sent", "status",
   ];
-  // 找出本插件用的 prefix：`render(h, { prefix: "xx" })`
-  const prefixMatch = src.match(/prefix\s*:\s*["']([A-Za-z0-9]+)["']/);
+  // 只有真的调了 feedback-ui 的渲染层才查。判据是 `.render(h` 这一处调用，
+  // 不是「全文出现过 feedback-text 字样」——cli-install-audit 的反馈区是
+  // 自绘的（类名 cli-audit-feedback-*，配内联 style），只用了行为层；
+  // 按字样判会把它拖进来，然后拿全文件**第一个** prefix（多半是下拉的
+  // `prefix: "cli"`）去拼类名，报出十条根本不存在的缺失。
+  const call = /\.render\s*\(\s*h\s*,/.exec(src);
+  if (!call) return;
+  // prefix 只在这个调用的实参里找：`render(h, { prefix: "xx", ... })`。
+  const area = src.slice(call.index, call.index + 600);
+  const prefixMatch = /\bprefix\s*:\s*["']([A-Za-z0-9]+)["']/.exec(area);
   if (!prefixMatch) return;
   const prefix = prefixMatch[1];
-  // 只有真的用了 feedback-ui 才查
-  if (!/feedback-(?:text|send|status)/.test(src)) return;
 
   const missing = [];
   for (const name of feedbackNames) {
