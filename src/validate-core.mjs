@@ -1,24 +1,31 @@
 /**
- * 插件自检的公共规则（四插件共用）。
+ * 插件自检的公共规则。
  *
  * 每次新建插件都从上一个插件里拷 validate-manifest.mjs，拷到第四份时四份已经
  * 明显漂开：`innerHTML` 黑名单和网络 host 推断只有每日热点有，另外三个漏了。
  * 漏掉的后果不是「少一条提示」，而是宿主侧直接拒绝加载 / 请求被拒，只在界面上
  * 显示一句看不懂的失败。
  *
- * 这份 core 只管**所有插件都成立**的规则；插件特有的检查通过 extraRules 追加，
- * 共用同一份 errors / warnings 与同一份输出格式。
+ * 这份 core 只管**所有插件都成立**的规则。插件特有的检查有两种挂法：
  *
- * 用法（在 scripts/validate-manifest.mjs 里）：
- *   import { validatePlugin } from "./validate-core.mjs";
- *   const code = validatePlugin({
- *     root: ROOT,
- *     extraRules(ctx) { ... ctx.fail(...) / ctx.warn(...) ... },
- *   });
- *   process.exit(code);
+ *   1. 简单形态（大多数插件只需要这个）：
+ *        import { runValidateCli } from "ccgui-plugin-shared/validate-core";
+ *        runValidateCli(import.meta.url, {
+ *          shared: ["feedback", "feedback-net", "feedback-ui"],
+ *          required: ["src/lib/model.mjs"],
+ *          extra({ fail }) { ... },
+ *        });
+ *
+ *   2. 完整形态（要自己控制输出/退出码时）：
+ *        const result = validatePlugin({ root, extraRules(ctx) { ... } });
+ *        process.exit(result.code);
+ *
+ * 新增插件不必再改本文件。
  */
 import fs from "node:fs";
 import path from "node:path";
+import { createRequire } from "node:module";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { DROPDOWN_CLASS_SUFFIXES } from "./dropdown.mjs";
 
@@ -685,4 +692,98 @@ function checkAssets(root, manifest, fail) {
   checkAsset(manifest.icon, "icon");
   for (const s of manifest.screenshots || []) checkAsset(s, "screenshot");
   if ((manifest.screenshots || []).length > 5) fail("screenshots 最多 5 张");
+}
+
+/**
+ * 自检 CLI 的公共入口。
+ *
+ * 六个插件原先各写一份 scripts/validate-manifest.mjs（31–39 行），其中 80% 是
+ * 同一段骨架：解析 ROOT、建 require、逐个 require.resolve 共用库入口、跑
+ * validatePlugin、按 code 退出。真正属于插件的只有「我有哪些私有库必须存在」
+ * 和几条自有断言。
+ *
+ * 这里把骨架收成一份，差异全部走配置：
+ *
+ * @param {string} scriptUrl 传 `import.meta.url`，据此推出插件根目录
+ * @param {object} [opts]
+ * @param {string[]} [opts.shared] 必须能从 ccgui-plugin-shared 解析到的入口名
+ *        （对应 build.mjs 里 `source: "shared"` 的那批库）
+ * @param {string[]} [opts.localLibs] 必须存在的 src/lib/<name>.mjs，只写名字
+ * @param {string} [opts.libSpec] 插件根目录下的清单文件名，给了就让 shared 与
+ *        localLibs 从清单里读——清单是 build 与 validate 共用的唯一真相，
+ *        两边各写一份必然漂开（slash-palette 就漂过）。
+ * @param {string[]} [opts.required] 必须存在的仓库内相对路径
+ * @param {(ctx:{root:string, manifest:object|null, src:string|null,
+ *          declared:Set<string>, fail:Function, warn:Function,
+ *          read:(rel:string)=>string, exists:(rel:string)=>boolean}) => void} [opts.extra]
+ *        插件自有检查。fail 会累积到 errors 并让退出码非零。
+ * @param {boolean} [opts.quiet]
+ * @returns {Promise<{code:number, errors:string[], warnings:string[]}>}
+ *         读清单时要 `import()`，所以是异步的。脚本里用：
+ *         `runValidateCli(import.meta.url, {...}).then((r) => process.exit(r.code))`
+ */
+export async function runValidateCli(scriptUrl, opts = {}) {
+  const root = path.resolve(path.dirname(fileURLToPath(scriptUrl)), "..");
+  const require = createRequire(scriptUrl);
+
+  // 清单优先：build 与 validate 读同一份，就不会出现「build 用 v0.1.6、
+  // validate 按 v0.1.2 的目录结构探入口」这种漂移。
+  // 清单本身是 ESM，直接 import 最稳：用正则解析数组的话，注释里一个逗号
+  // 就会把整个清单读坏，而那时报错会指向「缺少某个库」，查起来很远。
+  let specError = null;
+  let spec = null;
+  if (opts.libSpec) {
+    const file = path.join(root, opts.libSpec);
+    if (!fs.existsSync(file)) {
+      specError = `缺少 ${opts.libSpec}`;
+    } else {
+      try {
+        spec = (await import(pathToFileURL(file).href)).default;
+      } catch (err) {
+        specError = `${opts.libSpec} 无法加载：${err.message}`;
+      }
+    }
+  }
+  const shared = spec ? spec.shared || [] : opts.shared || [];
+  const localLibs = spec ? spec.local || [] : opts.localLibs || [];
+
+  return validatePlugin({
+    root,
+    quiet: opts.quiet,
+    extraRules(ctx) {
+      if (specError) ctx.fail(specError);
+      const dup = shared.find((n) => localLibs.includes(n));
+      if (dup) ctx.fail(`${opts.libSpec} 里 ${dup} 同时出现在 shared 与 local`);
+
+      for (const name of shared) {
+        try {
+          require.resolve("ccgui-plugin-shared/" + name);
+        } catch {
+          ctx.fail(`读不到共用库 ccgui-plugin-shared/${name}：先跑 npm install`);
+        }
+      }
+      for (const name of localLibs) {
+        if (!fs.existsSync(path.join(root, "src", "lib", name + ".mjs"))) {
+          ctx.fail(`缺少 src/lib/${name}.mjs`);
+        }
+      }
+      for (const rel of opts.required || []) {
+        if (!fs.existsSync(path.join(root, rel))) ctx.fail("缺少 " + rel);
+      }
+      if (typeof opts.extra === "function") {
+        opts.extra(
+          Object.assign({}, ctx, {
+            root,
+            read: (rel) => fs.readFileSync(path.join(root, rel), "utf8"),
+            exists: (rel) => fs.existsSync(path.join(root, rel)),
+          }),
+        );
+      }
+    },
+  });
+}
+
+/** 把 runValidateCli 的返回值直接变成进程退出码。脚本里一行搞定。 */
+export function exitWith(result) {
+  process.exit(result.code);
 }

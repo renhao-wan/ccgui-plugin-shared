@@ -5,7 +5,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { validatePlugin } from "../src/validate-core.mjs";
+import { pathToFileURL } from "node:url";
+import { validatePlugin, runValidateCli } from "../src/validate-core.mjs";
 
 /** 造一份能通过全部检查的最小插件；overrides 覆盖个别文件内容。 */
 function makePlugin(overrides) {
@@ -479,6 +480,142 @@ test("extraRules 能追加插件自己的检查，并共用一份 errors/warning
     // 上下文里给的是已解析的 manifest 与 fail/warn，插件不必自己再读文件。
     assert.equal(seen[0], "demo-plugin");
     assert.deepEqual(seen.slice(1), ["function", "function"]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+/**
+ * runValidateCli：六个插件的 validate-manifest.mjs 原先各写一份骨架，
+ * 80% 是同一段（解析 ROOT、require.resolve 共用库、跑 validatePlugin、退出）。
+ * 这里验证公共入口能覆盖它们实际用到的配置项，且插件的自有检查仍能报错。
+ */
+test("runValidateCli 用 import.meta.url 推出插件根目录并跑完整规则", async () => {
+  const root = makePlugin({
+    "src/lib/a.mjs": "export const A = 1;\n",
+    "src/main.head.js": "const T = 1;\n",
+    "scripts/build.mjs": "// build\n",
+  });
+  try {
+    // 伪装成 <root>/scripts/validate-manifest.mjs
+    const fakeUrl = pathToFileURL(path.join(root, "scripts", "validate-manifest.mjs")).href;
+    const out = await runValidateCli(fakeUrl, {
+      required: ["src/main.head.js", "scripts/build.mjs"],
+      localLibs: ["a"],
+      quiet: true,
+    });
+    assert.deepEqual(out.errors, [], out.errors.join("; "));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("runValidateCli 的 required / localLibs 缺失时逐条报错", async () => {
+  const root = makePlugin();
+  try {
+    const fakeUrl = pathToFileURL(path.join(root, "scripts", "v.mjs")).href;
+    const out = await runValidateCli(fakeUrl, {
+      required: ["src/nope.mjs"],
+      localLibs: ["missing"],
+      quiet: true,
+    });
+    assert.ok(has(out.errors, /缺少 src\/nope\.mjs/), out.errors.join("; "));
+    assert.ok(has(out.errors, /缺少 src\/lib\/missing\.mjs/), out.errors.join("; "));
+    assert.equal(out.code, 1);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("runValidateCli 的 extra 拿到 read/exists 与已解析的 manifest", async () => {
+  const root = makePlugin();
+  try {
+    const fakeUrl = pathToFileURL(path.join(root, "scripts", "v.mjs")).href;
+    let seen = null;
+    await runValidateCli(fakeUrl, {
+      quiet: true,
+      extra(ctx) {
+        seen = {
+          id: ctx.manifest.id,
+          hasMain: ctx.exists("main.js"),
+          hasNope: ctx.exists("nope.js"),
+          mainHead: ctx.read("main.js").includes("activate"),
+        };
+      },
+    });
+    assert.deepEqual(seen, { id: "demo-plugin", hasMain: true, hasNope: false, mainHead: true });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("runValidateCli 的 extra 报错会进 errors，退出码随之非零", async () => {
+  const root = makePlugin();
+  try {
+    const fakeUrl = pathToFileURL(path.join(root, "scripts", "v.mjs")).href;
+    const out = await runValidateCli(fakeUrl, {
+      quiet: true,
+      extra({ fail }) {
+        fail("插件自有的检查项");
+      },
+    });
+    assert.ok(has(out.errors, /插件自有的检查项/), out.errors.join("; "));
+    assert.equal(out.code, 1);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+/**
+ * libSpec：库清单只有一份。
+ *
+ * 真实事故：slash-palette 的 build.mjs 早已换成 v0.1.6，validate-manifest.mjs
+ * 还按 0.1.2 的目录结构 require 入口。两份清单没有任何约束，漂开了也没人发现，
+ * 直到 validate-core 改成 `import "./dropdown.mjs"` 才炸出来。
+ */
+test("libSpec 让 shared / localLibs 从同一份清单读", async () => {
+  const root = makePlugin({
+    "src/lib/a.mjs": "export const A = 1;\n",
+    "plugin.libs.mjs": 'export default { local: ["a"] };\n',
+  });
+  try {
+    const fakeUrl = pathToFileURL(path.join(root, "scripts", "v.mjs")).href;
+    const out = await runValidateCli(fakeUrl, { libSpec: "plugin.libs.mjs", quiet: true });
+    assert.deepEqual(out.errors, [], out.errors.join("; "));
+
+    // 清单里声明的本地库不存在时要报错（而不是静默跳过）
+    const root2 = makePlugin({ "plugin.libs.mjs": 'export default { local: ["nope"] };\n' });
+    try {
+      const url2 = pathToFileURL(path.join(root2, "scripts", "v.mjs")).href;
+      const out2 = await runValidateCli(url2, { libSpec: "plugin.libs.mjs", quiet: true });
+      assert.ok(has(out2.errors, /缺少 src\/lib\/nope\.mjs/), out2.errors.join("; "));
+    } finally {
+      fs.rmSync(root2, { recursive: true, force: true });
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("libSpec 里同一个名字同时出现在 shared 与 local 时报错", async () => {
+  // build 会读到两份不同源码，产物自检必然失败，但报错会指向「不一致」；
+  // 在这里直接指出真实原因。
+  const root = makePlugin({ "plugin.libs.mjs": 'export default { shared: ["feedback"], local: ["feedback"] };\n' });
+  try {
+    const fakeUrl = pathToFileURL(path.join(root, "scripts", "v.mjs")).href;
+    const out = await runValidateCli(fakeUrl, { libSpec: "plugin.libs.mjs", quiet: true });
+    assert.ok(has(out.errors, /同时出现在 shared 与 local/), out.errors.join("; "));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("libSpec 指向的文件不存在时报错，而不是静默当成空清单", async () => {
+  const root = makePlugin();
+  try {
+    const fakeUrl = pathToFileURL(path.join(root, "scripts", "v.mjs")).href;
+    const out = await runValidateCli(fakeUrl, { libSpec: "plugin.libs.mjs", quiet: true });
+    assert.ok(has(out.errors, /缺少 plugin\.libs\.mjs/), out.errors.join("; "));
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

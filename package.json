@@ -1,7 +1,7 @@
 {
   "name": "ccgui-plugin-shared",
-  "version": "0.1.6",
-  "description": "CC GUI 插件的共用层：反馈渠道（纯函数 / 网络 / 行为）、Markdown 解析与渲染、自绘下拉、假 React 测试替身、manifest 自检",
+  "version": "0.2.0",
+  "description": "CC GUI 插件的共用层：反馈渠道（纯函数 / 网络 / 行为）、Markdown 解析与渲染、自绘下拉、假 React 测试替身、manifest 自检、构建期内联与库清单",
   "type": "module",
   "license": "MIT",
   "private": false,
@@ -12,6 +12,8 @@
     "./markdown": "./src/markdown.mjs",
     "./markdown-view": "./src/markdown-view.mjs",
     "./dropdown": "./src/dropdown.mjs",
+    "./build-lib": "./src/build-lib.mjs",
+    "./lib-spec": "./src/lib-spec.mjs",
     "./fake-react": "./src/fake-react.mjs",
     "./validate-core": "./src/validate-core.mjs"
   },
