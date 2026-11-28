@@ -447,6 +447,9 @@ export function validatePlugin(opts) {
         continue;
       }
       if (execUsed && perm.startsWith("exec:")) continue;
+      // 只对「本工具确实会查」的权限下结论。查不到映射的权限说明规则没覆盖，
+      // 此时沉默比误报更有用——见 DETECTABLE 的注释。
+      if (!DETECTABLE.has(perm)) continue;
       if (!used.has(perm)) warn(`声明了权限 "${perm}" 但未检出对应调用`);
     }
   }
@@ -632,33 +635,70 @@ function classProvidedByCaller(src, name) {
   return Boolean(m && String(m[1]).trim());
 }
 
+/**
+ * 权限 → 源码用法的映射。
+ *
+ * 做成数据而不是一串 if：
+ *   1. 加一条权限只要加一行，不会漏掉 `need(...)` 的调用；
+ *   2. **没写进表里的权限 = 本工具无法静态检测**，多声明时不再警告（见下方
+ *      `DETECTABLE`）。这条很关键：早先只写了 `ctx.workspaces`（复数），
+ *      slash-palette 用的是 `ctx.workspace.getMetadata()`（单数），于是它常年
+ *      背着一条假 WARN；`ui:panel-tab` 更是压根没有映射。
+ *
+ * 正则统一带 `(?:appCtx|ctx)\.` 前缀，只认同一个对象上的调用，避免把注释或
+ * 字符串里的同名片段当成真实用法。
+ */
+const USAGE_RULES = [
+  ["storage", /\b(?:appCtx|ctx)\.storage\s*\./, "ctx.storage"],
+  ["plugin.storage", /\b(?:appCtx|ctx)\.documentStorage\s*\./, "ctx.documentStorage"],
+  ["ui:settings-section", /\b(?:appCtx|ctx)\.ui\.(?:registerSettingsSection|openSettings)\b/, "settings section"],
+  ["ui:command", /\b(?:appCtx|ctx)\.ui\.registerCommand\b/, "registerCommand"],
+  ["ui:center-tab", /\b(?:appCtx|ctx)\.ui\.(?:registerCenterTab|openCenterTab)\b/, "center tab"],
+  ["ui:sidebar-entry", /\b(?:appCtx|ctx)\.ui\.registerSidebarNav\b/, "sidebar entry"],
+  [
+    "ui:composer-status",
+    /\b(?:appCtx|ctx)\.ui\.(?:registerComposerStatusItem|registerComposerSlot)\b/,
+    "registerComposerStatusItem",
+  ],
+  ["ui:overlay", /\b(?:appCtx|ctx)\.ui\.registerOverlay\b/, "registerOverlay"],
+  ["ui:panel-tab", /\b(?:appCtx|ctx)\.ui\.registerPanelTab\b/, "registerPanelTab"],
+  ["composer:draft", /\b(?:appCtx|ctx)\.composer\.setDraft\s*\(/, "composer.setDraft"],
+  ["theme", /\b(?:appCtx|ctx)\.theme\.(?:injectCss|setTokens)\s*\(/, "ctx.theme"],
+  ["events", /\b(?:appCtx|ctx)\.events\.(?:on|emit)\s*\(/, "ctx.events"],
+  ["agent", /\b(?:appCtx|ctx)\.agent\./, "ctx.agent"],
+  ["host:session", /\b(?:appCtx|ctx)\.sessions\./, "ctx.sessions"],
+  ["host:workspace", /\b(?:appCtx|ctx)\.workspaces\.(?:add|list)\s*\(/, "ctx.workspaces"],
+  // 单数 `ctx.workspace` 是「当前工作区」，复数 `ctx.workspaces` 是列表/新建。
+  // 两者不是一回事，但读元信息只发生在单数形式上。
+  ["workspace.metadata.read", /\b(?:appCtx|ctx)\.workspace\.getMetadata\s*\(/, "ctx.workspace.getMetadata"],
+  ["host:models", /\b(?:appCtx|ctx)\.models\./, "ctx.models"],
+  [
+    "assets:directory",
+    /\b(?:appCtx|ctx)\.assets\.(?:grantDirectory|grantFile|listDirectories|revokeDirectory|directoryUrl)\s*\(/,
+    "ctx.assets directory picker",
+  ],
+];
+
+/**
+ * 本工具能静态检测的权限集合。
+ *
+ * 不在这个集合里、又出现在 manifest 的权限，多声明时**不警告**——检测不到
+ * 不等于没用到。以前这里是「凡未出现在 required 里就警告」，于是每加一条
+ * 检测不到的新权限（`ui:add-menu`、`ui:markdown`、`usage.read` …）都会让所有
+ * 用到它的插件挂一条假 WARN，而且没人分得清是真问题还是规则没覆盖。
+ *
+ * network: / exec: 由 host 与 bin 推断，天然可检测，单独处理。
+ */
+const DETECTABLE = new Set(USAGE_RULES.map(([perm]) => perm));
+
 /** 按源码里实际出现的用法，推出必须声明的权限。 */
 function declarationsUsedBySource(src, hosts, bins) {
   const required = [];
   const need = (perm, usage) => required.push([perm, usage]);
 
-  if (/\b(?:appCtx|ctx)\.storage\s*\./.test(src)) need("storage", "ctx.storage");
-  if (/\b(?:appCtx|ctx)\.documentStorage\s*\./.test(src)) need("plugin.storage", "ctx.documentStorage");
-  if (/\b(?:appCtx|ctx)\.ui\.registerSettingsSection\b|\b(?:appCtx|ctx)\.ui\.openSettings\b/.test(src))
-    need("ui:settings-section", "settings section");
-  if (/\b(?:appCtx|ctx)\.ui\.registerCommand\b/.test(src)) need("ui:command", "registerCommand");
-  if (/\b(?:appCtx|ctx)\.ui\.registerCenterTab\b|\b(?:appCtx|ctx)\.ui\.openCenterTab\b/.test(src))
-    need("ui:center-tab", "center tab");
-  if (/\b(?:appCtx|ctx)\.ui\.registerSidebarNav\b/.test(src)) need("ui:sidebar-entry", "sidebar entry");
-  if (/\b(?:appCtx|ctx)\.ui\.registerComposerStatusItem\b|\b(?:appCtx|ctx)\.ui\.registerComposerSlot\b/.test(src))
-    need("ui:composer-status", "registerComposerStatusItem");
-  if (/\b(?:appCtx|ctx)\.ui\.registerOverlay\b/.test(src)) need("ui:overlay", "registerOverlay");
-  if (/\b(?:appCtx|ctx)\.composer\.setDraft\s*\(/.test(src)) need("composer:draft", "composer.setDraft");
-  if (/\b(?:appCtx|ctx)\.theme\.(injectCss|setTokens)\s*\(/.test(src)) need("theme", "ctx.theme");
-  if (/\b(?:appCtx|ctx)\.events\.(on|emit)\s*\(/.test(src)) need("events", "ctx.events");
-  if (/\b(?:appCtx|ctx)\.agent\./.test(src)) need("agent", "ctx.agent");
-  if (/\b(?:appCtx|ctx)\.sessions\./.test(src)) need("host:session", "ctx.sessions");
-  if (/\b(?:appCtx|ctx)\.workspaces\.(add|list)\s*\(/.test(src)) need("host:workspace", "ctx.workspaces");
-  if (/\b(?:appCtx|ctx)\.models\./.test(src)) need("host:models", "ctx.models");
-  if (
-    /\b(?:appCtx|ctx)\.assets\.(grantDirectory|grantFile|listDirectories|revokeDirectory|directoryUrl)\s*\(/.test(src)
-  )
-    need("assets:directory", "ctx.assets directory picker");
+  for (const [perm, re, usage] of USAGE_RULES) {
+    if (re.test(src)) need(perm, usage);
+  }
 
   // network: 端点换了却忘记改 manifest，是最常见的「代码对、界面报错」来源。
   // network: 是精确主机匹配，没有通配，少一个字符就整条被拒。

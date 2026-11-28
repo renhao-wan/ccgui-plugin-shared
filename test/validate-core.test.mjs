@@ -280,6 +280,59 @@ test("声明了权限却没检出对应调用：只警告，不拦构建", () =>
   assert.ok(has(warnings, /agent/), warnings.join("; "));
 });
 
+test("单数 ctx.workspace.getMetadata 也能认出来，不再误报 workspace.metadata.read", () => {
+  // 真实误报：slash-palette 一直用 ctx.workspace.getMetadata() 读工作区元信息，
+  // 而规则里只写了复数 ctx.workspaces.*，于是它常年背着一条假 WARN。
+  const main = [
+    "export default function activate(ctx) {",
+    "  async function load() { return ctx.workspace.getMetadata(); }",
+    "  return load;",
+    "}",
+  ].join(String.fromCharCode(10));
+  const { errors, warnings } = run({
+    "main.js": main,
+    "manifest.json": manifestWith({ permissions: ["workspace.metadata.read"] }),
+  });
+  assert.deepEqual(errors, []);
+  assert.deepEqual(warnings, []);
+});
+
+test("registerPanelTab 认得出 ui:panel-tab，不再误报", () => {
+  // 真实误报：workspace-config 用 ctx.ui.registerPanelTab() 注册右侧面板，
+  // 规则里压根没有这条映射。
+  const main = [
+    "export default function activate(ctx) {",
+    "  ctx.ui.registerPanelTab({ id: 'x', component() { return null; } });",
+    "}",
+  ].join(String.fromCharCode(10));
+  const { errors, warnings } = run({
+    "main.js": main,
+    "manifest.json": manifestWith({ permissions: ["ui:panel-tab"] }),
+  });
+  assert.deepEqual(errors, []);
+  assert.deepEqual(warnings, []);
+});
+
+test("规则覆盖不到的权限不告警：检测不到不等于没用到", () => {
+  // 这些权限没有静态映射（ui:add-menu / ui:markdown / usage.read …）。
+  // 以前「凡未出现在 required 里就警告」，于是每加一条检测不到的新权限，
+  // 所有用到它的插件都会挂一条分不清真假的 WARN。
+  const { errors, warnings } = run({
+    "manifest.json": manifestWith({ permissions: ["storage", "ui:add-menu", "ui:markdown", "usage.read"] }),
+  });
+  assert.deepEqual(errors, []);
+  assert.deepEqual(warnings, []);
+});
+
+test("能检测的权限确实没用上时仍然告警", () => {
+  // DETECTABLE 只挡「规则没覆盖」，不挡「规则说没用到」。
+  const { warnings } = run({
+    "manifest.json": manifestWith({ permissions: ["storage", "ui:command"] }),
+  });
+  assert.ok(has(warnings, /ui:command/), warnings.join("; "));
+  assert.ok(!has(warnings, /"storage"/), warnings.join("; "));
+});
+
 test("package.json 与 manifest.json 版本漂开时报错", () => {
   const { errors } = run({ "package.json": JSON.stringify({ name: "d", version: "1.2.4" }) });
   assert.ok(has(errors, /版本/), errors.join("; "));
