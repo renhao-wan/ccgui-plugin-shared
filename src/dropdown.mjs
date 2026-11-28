@@ -20,6 +20,7 @@ export const DROPDOWN_CLASS_SUFFIXES = Object.freeze([
   "caret",
   "scrim",
   "menu",
+  "group",
   "item",
   "label",
   "check",
@@ -64,6 +65,13 @@ export function useDdPopover(R) {
  * `getR` 是**取 React 的函数**而不是 React 本身：插件的 `appCtx` 要等 activate
  * 才赋值，顶层写 `createDropdown(appCtx.react, ...)` 拿到的是 null。
  *
+ * 选项形状：`{ value, label, disabled?, title?, group? }`
+ *   - `disabled` 可以是布尔值，也可以是 `isDisabled(item)` 回调——语义一样，
+ *     回调那种是给「禁用条件依赖选中值或外部状态」的调用方用的。
+ *   - `title` 会落到选项的 title 属性上，用于「仅名称 / 仅手动」这类
+ *     不看说明就看不懂的取值。
+ *   - `group` 相同的连续选项前面会插一条分组标题。
+ *
  * @param {() => object} getR  返回 { useState, useRef, useEffect, createElement }
  * @param {{ prefix: string }} opts  prefix 决定类名，如 "gt" → gt-dd-trigger
  */
@@ -87,6 +95,19 @@ export function createDropdown(getR, opts) {
     const selected = selectedIdx >= 0 ? items[selectedIdx] : null;
     const placeholder = props.placeholder || "请选择";
 
+    /**
+     * 统一的禁用判断。
+     *
+     * 组件里每个用到「这一项能不能选」的地方都走它，不要有的地方读
+     * `item.disabled`、有的地方调回调——两套判断迟早分叉，表现是
+     * 「灰着但能点」或「能点但方向键跳过去了」。
+     */
+    const disabledOf = (item) => {
+      if (!item) return true;
+      if (typeof props.isDisabled === "function") return Boolean(props.isDisabled(item));
+      return Boolean(item.disabled);
+    };
+
     R.useEffect(() => {
       if (!open) return;
       const el = itemRefs.current[focusIdx];
@@ -96,13 +117,13 @@ export function createDropdown(getR, opts) {
     const openMenu = () => {
       if (props.disabled || items.length === 0) return;
       let i = selectedIdx;
-      if (i < 0) i = items.findIndex((it) => !it.disabled);
+      if (i < 0) i = items.findIndex((it) => !disabledOf(it));
       setFocusIdx(i < 0 ? 0 : i);
       openPopover(Math.min(260, items.length * 32 + 8));
     };
 
     const choose = (item) => {
-      if (!item || item.disabled) return;
+      if (!item || disabledOf(item)) return;
       setOpen(false);
       if (String(item.value) !== value) props.onChange(item.value);
     };
@@ -112,7 +133,7 @@ export function createDropdown(getR, opts) {
       let i = focusIdx;
       for (let n = 0; n < items.length; n += 1) {
         i = (i + step + items.length) % items.length;
-        if (!items[i].disabled) break;
+        if (!disabledOf(items[i])) break;
       }
       setFocusIdx(i);
     };
@@ -203,32 +224,48 @@ export function createDropdown(getR, opts) {
             "div",
             { className: cls("menu"), role: "listbox" },
             items.length
-              ? items.map((item, i) =>
-                  h(
-                    "div",
-                    {
-                      // value 可能重复（不同分组的同名项），带上下标才唯一。
-                      key: String(item.value) + ":" + i,
-                      ref: (el) => {
-                        itemRefs.current[i] = el;
+              ? items.reduce((rows, item, i) => {
+                  // 分组标题：只在组名变化时插一条，且不参与键盘焦点。
+                  // 不用「值相同的项必然相邻」这种假设——按出现顺序判断，
+                  // 调用方把同组项隔开就插两条标题，那是调用方的问题，不猜。
+                  const prevGroup = i > 0 ? items[i - 1].group : undefined;
+                  if (item.group && item.group !== prevGroup) {
+                    rows.push(
+                      h("div", { key: "g:" + item.group + ":" + i, className: cls("group") }, item.group),
+                    );
+                  }
+                  const dis = disabledOf(item);
+                  rows.push(
+                    h(
+                      "div",
+                      {
+                        // value 可能重复（不同分组的同名项），带上下标才唯一。
+                        key: String(item.value) + ":" + i,
+                        ref: (el) => {
+                          itemRefs.current[i] = el;
+                        },
+                        className:
+                          cls("item") +
+                          (i === focusIdx ? " is-active" : "") +
+                          (dis ? " is-disabled" : ""),
+                        role: "option",
+                        "aria-selected": String(item.value) === value,
+                        "aria-disabled": dis ? true : undefined,
+                        // 「仅名称 / 仅手动」这类取值，不看说明判断不了，
+                        // 悬停必须给出完整含义。
+                        title: item.title || undefined,
+                        tabIndex: -1,
+                        onClick: () => choose(item),
+                        onMouseEnter: () => {
+                          if (!dis) setFocusIdx(i);
+                        },
                       },
-                      className:
-                        cls("item") +
-                        (i === focusIdx ? " is-active" : "") +
-                        (item.disabled ? " is-disabled" : ""),
-                      role: "option",
-                      "aria-selected": String(item.value) === value,
-                      "aria-disabled": item.disabled ? true : undefined,
-                      tabIndex: -1,
-                      onClick: () => choose(item),
-                      onMouseEnter: () => {
-                        if (!item.disabled) setFocusIdx(i);
-                      },
-                    },
-                    h("span", { className: cls("label") }, item.label),
-                    h("span", { className: cls("check"), "aria-hidden": "true" }, "✓"),
-                  ),
-                )
+                      h("span", { className: cls("label") }, item.label),
+                      h("span", { className: cls("check"), "aria-hidden": "true" }, "✓"),
+                    ),
+                  );
+                  return rows;
+                }, [])
               : h("div", { className: cls("empty") }, props.emptyText || "没有可选项"),
           )
         : null,

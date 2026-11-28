@@ -355,7 +355,7 @@ test("createDropdown 产出的类名缺少 CSS 时报错", () => {
 });
 
 test("下拉的类名写全时不报错", () => {
-  const names = ["trigger", "value", "caret", "scrim", "menu", "item", "label", "check", "empty"];
+  const names = ["trigger", "value", "caret", "scrim", "menu", "group", "item", "label", "check", "empty"];
   const css = [""].concat(names).map((n) => (n ? `.lc-dd-${n}` : ".lc-dd") + " { color: red; }").join("\n");
   const src = [
     "export default function activate(ctx) { void ctx; return () => {}; }",
@@ -369,7 +369,7 @@ test("下拉的类名写全时不报错", () => {
 });
 
 test("只写 :disabled 变体不算写了主样式", () => {
-  const names = ["trigger", "value", "caret", "scrim", "menu", "item", "label", "check", "empty"];
+  const names = ["trigger", "value", "caret", "scrim", "menu", "group", "item", "label", "check", "empty"];
   const css = [""].concat(names)
     .filter((n) => n !== "menu")
     .map((n) => (n ? `.lc-dd-${n}` : ".lc-dd") + " { color: red; }")
@@ -385,6 +385,39 @@ test("只写 :disabled 变体不算写了主样式", () => {
   ].join("\n");
   const { errors } = run({ "main.js": src });
   assert.ok(has(errors, /lc-dd-menu\b/), errors.join("; "));
+});
+
+test("CSS 常量叫 STYLE / UI_CSS 时也要检查，不能只认 const CSS", () => {
+  // 真实漏检：workspace-config 用 `const STYLE =`、cli-install-audit 用
+  // `const UI_CSS =`，早年只匹配 /const CSS = `/，这两个插件的
+  // 「组件类名必须有 CSS」整段被跳过——规则写了形同虚设。
+  const src = (name) => [
+    "export default function activate(ctx) { void ctx; return () => {}; }",
+    "const Dropdown = createDropdown(() => null, { prefix: 'wc' });",
+    "const " + name + " = `",
+    ".wc-dd-trigger { color: red; }",
+    "`;",
+  ].join("\n");
+
+  for (const name of ["STYLE", "UI_CSS", "STYLES"]) {
+    const { errors } = run({ "main.js": src(name) });
+    assert.ok(has(errors, /wc-dd-menu/), name + " 的 CSS 没被检查到：" + errors.join("; "));
+  }
+});
+
+test("不是 CSS 的模板字符串不会被误当成样式表", () => {
+  // 只认「含至少一条 .foo { 规则」的模板串，否则普通的 SQL / 提示文案里
+  // 只要出现一个点号就会被拉去做类名检查，报出莫名其妙的缺失。
+  const src = [
+    "export default function activate(ctx) { void ctx; return () => {}; }",
+    "const Dropdown = createDropdown(() => null, { prefix: 'wc' });",
+    "const HINT = `请选择 . 一项`;",
+    "const CSS = `.wc-dd-trigger { color: red; }`;",
+    ].join("\n");
+  const { errors } = run({ "main.js": src });
+  // 仍然会因为没有 wc-dd-menu 报错（CSS 那条是真 CSS），但不能重复报很多遍。
+  const ddErrors = errors.filter((e) => /下拉的类名/.test(e));
+  assert.equal(ddErrors.length, 1, "同一条缺失只该报一次：" + errors.join("; "));
 });
 
 test("extraRules 能追加插件自己的检查，并共用一份 errors/warnings", () => {

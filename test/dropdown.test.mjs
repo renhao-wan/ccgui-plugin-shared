@@ -216,6 +216,82 @@ test("Esc 关闭后把焦点还给触发器", () => {
   assert.equal(byClass(kept, "t-dd-menu"), null);
 });
 
+test("isDisabled 回调优先于 item.disabled", () => {
+  const R = createFakeReact();
+  const Dropdown = createDropdown(() => R.api, { prefix: "t" });
+  // 回调把 index 2（Java）之外的全放开，模拟「禁用条件由外部状态决定」
+  const items = ITEMS.map((it, i) => ({ ...it, disabled: i % 2 === 0 }));
+  const tree = R.renderFresh(() =>
+    R.api.createElement(Dropdown, {
+      items,
+      value: "cpp",
+      onChange() {},
+      isDisabled: (it) => it.value === "java",
+    }),
+  );
+  byClass(tree, "t-dd-trigger").props.onClick();
+  const kept = R.renderKeep(() =>
+    R.api.createElement(Dropdown, {
+      items,
+      value: "cpp",
+      onChange() {},
+      isDisabled: (it) => it.value === "java",
+    }),
+  );
+  const rendered = [];
+  walk(kept, (n) => {
+    const c = n.props && n.props.className;
+    if (typeof c === "string" && c.split(/\s+/).includes("t-dd-item")) rendered.push(c);
+  });
+  // items 里 index 0 的 cpp 和 2 的 java 的 disabled 都是 true，
+  // 但回调只认 java：说明回调确实生效，不是两条判断各取一半
+  assert.equal(rendered.filter((c) => /\bis-disabled\b/.test(c)).length, 1);
+});
+
+test("item.title 落到选项的 title 属性", () => {
+  const R = createFakeReact();
+  const Dropdown = createDropdown(() => R.api, { prefix: "t" });
+  const items = [
+    { value: "a", label: "仅名称", title: "只让模型知道名字，不加载正文" },
+    { value: "b", label: "仅手动" },
+  ];
+  const props = { items, value: "a", onChange() {} };
+  const tree = R.renderFresh(() => R.api.createElement(Dropdown, props));
+  byClass(tree, "t-dd-trigger").props.onClick();
+  const kept = R.renderKeep(() => R.api.createElement(Dropdown, props));
+  const first = byClass(kept, "t-dd-item");
+  assert.equal(first.props.title, "只让模型知道名字，不加载正文");
+});
+
+test("分组标题只在组名变化处插一条，且不参与键盘焦点", () => {
+  const R = createFakeReact();
+  const Dropdown = createDropdown(() => R.api, { prefix: "t" });
+  const items = [
+    { value: "a", label: "A", group: "已安装" },
+    { value: "b", label: "B", group: "已安装" },
+    { value: "c", label: "C", group: "未安装" },
+  ];
+  const props = { items, value: "a", onChange() {} };
+  const tree = R.renderFresh(() => R.api.createElement(Dropdown, props));
+  byClass(tree, "t-dd-trigger").props.onClick();
+  const kept = R.renderKeep(() => R.api.createElement(Dropdown, props));
+  const groups = [];
+  walk(kept, (n) => {
+    const c = n.props && n.props.className;
+    if (typeof c === "string" && c.split(/\s+/).includes("t-dd-group")) groups.push(textOf(n));
+  });
+  assert.deepEqual(groups, ["已安装", "未安装"], "两个组只插三条里的两条标题");
+  // 没有 group 的选项（普通列表）不应该凭空多出标题
+  const flat = R.renderFresh(() =>
+    R.api.createElement(Dropdown, { items: ITEMS, value: "cpp", onChange() {} }),
+  );
+  byClass(flat, "t-dd-trigger").props.onClick();
+  const kept2 = R.renderKeep(() =>
+    R.api.createElement(Dropdown, { items: ITEMS, value: "cpp", onChange() {} }),
+  );
+  assert.equal(byClass(kept2, "t-dd-group"), null);
+});
+
 test("useDdPopover 在下方放不下时向上弹", () => {
   const R = createFakeReact();
   let pop = null;

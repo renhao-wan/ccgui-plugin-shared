@@ -62,7 +62,7 @@ fake-react / validate-core → （无）
 ## 测试
 
 ```bash
-npm test        # 144 条，覆盖 8 个模块
+npm test        # 151 条，覆盖 8 个模块
 ```
 
 这些测试原来散在插件仓库里（trending 的 `test/` 下）。搬到这里之后，

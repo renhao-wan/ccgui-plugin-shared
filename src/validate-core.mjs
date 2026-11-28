@@ -487,12 +487,18 @@ function checkBundle(root, fail, warn) {
   for (const [re, label] of BANNED) if (re.test(src)) fail(`main.js 命中黑名单：${label}`);
 
   // 注入的 CSS 不能引用远程资源：宿主会拒绝整段样式，界面直接变成裸 HTML。
-  const cssBlock = src.match(/const CSS = `([\s\S]*?)`;/);
-  if (cssBlock) {
-    if (/@import/.test(cssBlock[1])) fail("注入 CSS 含 @import（宿主会拒绝）");
-    if (/url\(\s*["']?https?:/i.test(cssBlock[1])) fail("注入 CSS 含远程 url()（宿主会拒绝）");
-    checkClassesHaveCss(src, cssBlock[1], fail);
-    checkDropdownCss(src, cssBlock[1], fail);
+  //
+  // 变量名各插件并不统一（CSS / STYLE / UI_CSS 都有），早年只认 `const CSS =`
+  // 就把 workspace-config 与 cli-install-audit 的样式整段跳过了——它们的
+  // 「类名必须有 CSS」从没被检查过。这里按「字符串模板且内容像 CSS」认：
+  // 声明名不限，但必须含至少一条 `.foo {` 规则，避免把别的模板串也当成 CSS。
+  for (const block of src.matchAll(/const\s+[A-Za-z0-9_$]+\s*=\s*`([\s\S]*?)`;/g)) {
+    const css = block[1];
+    if (!/\.[A-Za-z][A-Za-z0-9_-]*\s*[,{]/.test(css)) continue;
+    if (/@import/.test(css)) fail("注入 CSS 含 @import（宿主会拒绝）");
+    if (/url\(\s*["']?https?:/i.test(css)) fail("注入 CSS 含远程 url()（宿主会拒绝）");
+    checkClassesHaveCss(src, css, fail);
+    checkDropdownCss(src, css, fail);
   }
   return src;
 }
