@@ -190,6 +190,32 @@ test("没有选项时触发器禁用，并显示 emptyText", () => {
   assert.ok(textOf(trigger).includes("还没加载"));
 });
 
+test("className 原样透传，调用方靠它做布局", () => {
+  const R = createFakeReact();
+  const Dropdown = createDropdown(() => R.api, { prefix: "lc" });
+  const tree = R.renderFresh(() =>
+    R.api.createElement(Dropdown, {
+      items: ITEMS,
+      value: "cpp",
+      onChange() {},
+      className: "lc-settings-dd",
+    }),
+  );
+  assert.ok(byClass(tree, "lc-dd"), "自己的类名还在");
+  assert.ok(byClass(tree, "lc-settings-dd"), "调用方的类名也在");
+});
+
+test("Esc 关闭后把焦点还给触发器", () => {
+  const { R, Host } = makeHost("t", "cpp");
+  const tree = R.renderFresh(Host, {}, { effects: true });
+  byClass(tree, "t-dd-trigger").props.onClick();
+  let kept = R.renderKeep(Host);
+  assert.ok(byClass(kept, "t-dd-menu"));
+  kept.props.onKeyDown(key("Escape", domTarget("t-dd-trigger")));
+  kept = R.renderKeep(Host);
+  assert.equal(byClass(kept, "t-dd-menu"), null);
+});
+
 test("useDdPopover 在下方放不下时向上弹", () => {
   const R = createFakeReact();
   let pop = null;

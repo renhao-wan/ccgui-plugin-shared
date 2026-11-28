@@ -154,6 +154,10 @@ export function createDropdown(getR, opts) {
       } else if (ev.key === "Escape" && open) {
         ev.preventDefault();
         setOpen(false);
+        // 焦点回到触发器：菜单关上后焦点若还留在已卸载的 option 上，
+        // 浏览器会把焦点丢回 body，接着按 Tab 就得从头走一遍整页。
+        const el = triggerRef.current;
+        if (el && typeof el.focus === "function") el.focus();
       } else if (ev.key === "Tab" && open) {
         // 焦点会离开这个组件；scrim 是 fixed 全屏，不关掉会留下一层看不见的
         // 遮罩继续吞点击。
@@ -166,7 +170,12 @@ export function createDropdown(getR, opts) {
     return h(
       "div",
       {
-        className: base + (open ? " is-open" : "") + (up ? " is-up" : ""),
+        // className 透传：调用方常靠它做布局（`.lc-settings .lc-dd { width:100% }`）。
+        className:
+          base +
+          (props.className ? " " + props.className : "") +
+          (open ? " is-open" : "") +
+          (up ? " is-up" : ""),
         onKeyDown,
       },
       h(
